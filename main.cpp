@@ -19,19 +19,19 @@ struct Actividad {
     int pipe_fd[2];
     bool completada = false;
     bool en_proceso = false;
+    bool fallida = false;
     pid_t pid = 0;
 };
 
 vector<pid_t> pids_activos;
 
 void llegada_seremi(int senal) {
-    cout << "\n\n[!] Llego la Seremi de Salud (SIGINT)! Cancelando el asado...\n";
+    cout << "\nllego la seremi (SIGINT), jodio el asado\n";
     for (size_t i = 0; i < pids_activos.size(); i++) {
         if (pids_activos[i] > 0) {
             kill(pids_activos[i], SIGKILL);
         }
     }
-    cout << "[!] Todos los procesos hijos han sido terminados.\n";
     exit(1); 
 }
 
@@ -41,7 +41,7 @@ vector<Actividad> leer_plan(const string& nombre_archivo) {
     string linea;
 
     if (!archivo.is_open()) {
-        cerr << "Error: No se pudo abrir el archivo " << nombre_archivo << "\n";
+        cerr << "error leyendo archivo\n";
         exit(1);
     }
     srand(time(NULL)); 
@@ -87,7 +87,7 @@ vector<Actividad> leer_plan(const string& nombre_archivo) {
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        cerr << "Uso: " << argv[0] << " plan.txt K\n";
+        cerr << "uso: " << argv[0] << " plan.txt K\n";
         return 1;
     }
 
@@ -102,19 +102,32 @@ int main(int argc, char* argv[]) {
     while (listas < total) {
         for (size_t i = 0; i < plan.size(); i++) {
             if (!plan[i].completada && !plan[i].en_proceso && activas < k_max) {
+                
                 bool puede_partir = true;
+                bool cancelada = false;
+                
                 for (int d : plan[i].dependencias) {
                     bool dep_ok = false;
                     for (size_t j = 0; j < plan.size(); j++) {
-                        if (plan[j].id == d && plan[j].completada) {
-                            dep_ok = true;
+                        if (plan[j].id == d) {
+                            if (plan[j].fallida) {
+                                cancelada = true;
+                            } else if (plan[j].completada) {
+                                dep_ok = true;
+                            }
                             break;
                         }
                     }
-                    if (!dep_ok) {
-                        puede_partir = false;
-                        break;
-                    }
+                    if (cancelada) break;
+                    if (!dep_ok) puede_partir = false;
+                }
+
+                if (cancelada) {
+                    plan[i].completada = true;
+                    plan[i].fallida = true;
+                    listas++;
+                    cout << "cancelado por dep: " << plan[i].nombre << "\n";
+                    continue; 
                 }
 
                 if (puede_partir) {
@@ -126,7 +139,12 @@ int main(int argc, char* argv[]) {
                         close(plan[i].pipe_fd[0]);
                         usleep(plan[i].tiempo_ms * 1000);
                         
-                        string msj = "listo " + plan[i].nombre;
+                        if (rand() % 100 < 15) { 
+                            close(plan[i].pipe_fd[1]);
+                            exit(1);
+                        }
+                        
+                        string msj = "listo " + plan[i].nombre + " en " + to_string(plan[i].tiempo_ms) + " ms";
                         write(plan[i].pipe_fd[1], msj.c_str(), msj.length());
                         close(plan[i].pipe_fd[1]);
                         exit(0);
@@ -153,17 +171,27 @@ int main(int argc, char* argv[]) {
                 }
             }
             
+            bool fallo = false;
+            if (WIFEXITED(status) && WEXITSTATUS(status) != 0) {
+                fallo = true;
+            }
+            
             for (size_t i = 0; i < plan.size(); i++) {
                 if (plan[i].pid == termino) {
                     plan[i].completada = true;
                     plan[i].en_proceso = false;
                     listas++;
                     
-                    char buffer[100];
-                    int bytes = read(plan[i].pipe_fd[0], buffer, sizeof(buffer));
-                    if (bytes > 0) {
-                        buffer[bytes] = '\0';
-                        cout << "Actividad completada: " << buffer << "\n";
+                    if (fallo) {
+                        plan[i].fallida = true;
+                        cout << "fallo actividad: " << plan[i].nombre << " despues de " << plan[i].tiempo_ms << " ms\n";
+                    } else {
+                        char buffer[100];
+                        int bytes = read(plan[i].pipe_fd[0], buffer, sizeof(buffer));
+                        if (bytes > 0) {
+                            buffer[bytes] = '\0';
+                            cout << "pipe: " << buffer << "\n";
+                        }
                     }
                     close(plan[i].pipe_fd[0]);
                     break;
@@ -171,6 +199,5 @@ int main(int argc, char* argv[]) {
             }
         }
     }
-    cout << "\nAsado finalizado con exito!\n";
     return 0;
 }
