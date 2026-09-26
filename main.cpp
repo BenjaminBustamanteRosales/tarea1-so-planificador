@@ -1,10 +1,13 @@
 #include <iostream>
+
 #include <fstream>
 #include <sstream>
 #include <vector>
 #include <string>
 #include <cstdlib> 
 #include <ctime>   
+#include <unistd.h>
+#include <sys/wait.h>
 
 using namespace std;
 
@@ -14,7 +17,10 @@ struct Actividad {
     string nombre;
     int tiempo_ms;
     vector<int> dependencias;
-    int pipe_fd[2]; 
+    int pipe_fd[2];
+    bool completada = false;
+    bool en_proceso = false;
+    pid_t pid = 0;
 };
 
 
@@ -80,29 +86,82 @@ vector<Actividad> leer_plan(const string& nombre_archivo) {
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        cerr << "Error. Uso correcto: " << argv[0] << " <archivo_plan> <K_concurrencia>\n";
+        cerr << "Uso: " << argv[0] << " plan.txt K\n";
         return 1;
     }
 
-    cout << "Plan del WAtON loyola\n";
-    cout << "Archivo a leer: " << argv[1] << "\n";
-    cout << "Limite de concurrencia (K): " << argv[2] << "\n";
-
+    int k_max = stoi(argv[2]);
+    vector<Actividad> plan = leer_plan(argv[1]);
     
-    vector<Actividad> actividades = leer_plan(argv[1]);
+    int activas = 0;
+    int listas = 0;
+    int total = plan.size();
 
-    
-    cout << "\n--- DAG Cargado ---\n";
-    for (const auto& act : actividades) {
-        cout << "ID: " << act.id << " | " << act.nombre 
-             << " | Tiempo: " << act.tiempo_ms << " ms | Dependencias: ";
-        if (act.dependencias.empty()) {
-            cout << "Ninguna";
-        } else {
-            for (int d : act.dependencias) cout << d << " ";
+    while (listas < total) {
+        for (size_t i = 0; i < plan.size(); i++) {
+            if (!plan[i].completada && !plan[i].en_proceso && activas < k_max) {
+                
+                bool puede_partir = true;
+                for (int d : plan[i].dependencias) {
+                    bool dep_ok = false;
+                    for (size_t j = 0; j < plan.size(); j++) {
+                        if (plan[j].id == d && plan[j].completada) {
+                            dep_ok = true;
+                            break;
+                        }
+                    }
+                    if (!dep_ok) {
+                        puede_partir = false;
+                        break;
+                    }
+                }
+
+                if (puede_partir) {
+                    pipe(plan[i].pipe_fd);
+                    
+                    pid_t p = fork();
+                    if (p == 0) {
+                        close(plan[i].pipe_fd[0]);
+                        usleep(plan[i].tiempo_ms * 1000);
+                        
+                        string msj = "listo " + plan[i].nombre;
+                        write(plan[i].pipe_fd[1], msj.c_str(), msj.length());
+                        
+                        close(plan[i].pipe_fd[1]);
+                        exit(0);
+                    } else {
+                        close(plan[i].pipe_fd[1]);
+                        plan[i].pid = p;
+                        plan[i].en_proceso = true;
+                        activas++;
+                    }
+                }
+            }
         }
-        cout << "\n";
-    }
 
+        if (activas > 0) {
+            int status;
+            pid_t termino = wait(&status);
+            activas--;
+            
+            for (size_t i = 0; i < plan.size(); i++) {
+                if (plan[i].pid == termino) {
+                    plan[i].completada = true;
+                    plan[i].en_proceso = false;
+                    listas++;
+                    
+                    char buffer[100];
+                    int bytes = read(plan[i].pipe_fd[0], buffer, sizeof(buffer));
+                    if (bytes > 0) {
+                        buffer[bytes] = '\0';
+                        cout << "Mensaje por pipe: " << buffer << "\n";
+                    }
+                    close(plan[i].pipe_fd[0]);
+                    break;
+                }
+            }
+        }
+    }
+    
     return 0;
 }
